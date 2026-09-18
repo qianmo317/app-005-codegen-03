@@ -90,6 +90,7 @@ export interface Appointment {
   customerId: string;
   serviceId: string;
   employeeId: string;
+  instrumentId?: string;
   startTime: string;
   endTime: string;
   duration: number;
@@ -98,6 +99,53 @@ export interface Appointment {
   notes: string;
   reminderSent: boolean;
 }
+
+export type InstrumentStatus = 'active' | 'inactive';
+
+export interface Instrument {
+  id: string;
+  code: string;            // 仪器编号
+  name: string;            // 仪器名称
+  brand?: string;          // 品牌/型号
+  purchaseDate: string;    // 购进时间 YYYY-MM-DD
+  room: string;            // 所在房间
+  usageLimitMinutes: number;   // 累计使用时长保养阈值（分钟）
+  maintenanceIntervalDays: number; // 月份（天数）保养周期
+  status: InstrumentStatus; // 启用 / 停用
+  notes?: string;
+  createdAt: string;
+}
+
+export interface InstrumentUsage {
+  id: string;
+  instrumentId: string;
+  startTime: string;       // ISO 时间
+  endTime: string;         // ISO 时间
+  durationMinutes: number; // 本次使用时长
+  customerId?: string;     // 服务的顾客（手动登记可选）
+  serviceId?: string;      // 关联项目
+  appointmentId?: string;  // 关联预约（自动生成时）
+  purpose?: string;        // 用途备注
+  createdAt: string;
+}
+
+export type MaintenanceResult = 'completed' | 'parts_replaced' | 'repair';
+
+export interface MaintenanceRecord {
+  id: string;
+  instrumentId: string;
+  maintenanceDate: string; // ISO 时间
+  type: MaintenanceResult; // 完成保养 / 更换配件 / 故障维修
+  content: string;         // 保养内容
+  operator: string;        // 保养人
+  cost: number;
+  nextDueDate?: string;    // 下次到期日（留空则按周期自动推算）
+  notes?: string;
+  createdAt: string;
+}
+
+/** 保养状态：正常 / 即将到期 / 保养到期 / 已超期 */
+export type MaintenanceStatus = 'normal' | 'due_soon' | 'due' | 'overdue';
 
 export interface WaitList {
   id: string;

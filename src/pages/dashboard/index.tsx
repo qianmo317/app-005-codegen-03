@@ -1,22 +1,51 @@
 import React from 'react';
-import { Row, Col, Card, List, Avatar, Tag, Progress, Space } from 'antd';
+import { Row, Col, Card, List, Avatar, Tag, Progress, Space, Button } from 'antd';
 import {
   DollarOutlined,
   UserAddOutlined,
   CalendarOutlined,
   CheckCircleOutlined,
   ArrowUpOutlined,
-  ArrowDownOutlined
+  ArrowDownOutlined,
+  WarningOutlined,
+  ToolOutlined
 } from '@ant-design/icons';
 import ReactECharts from 'echarts-for-react';
 import { useSelector } from 'react-redux';
+import { useNavigate } from 'react-router-dom';
 import type { RootState } from '../../store';
 import { formatCurrency, formatTime, getStatusColor } from '../../utils/format';
+import { getMaintenanceInfo, MAINTENANCE_STATUS_META } from '../../utils/instrument';
+import dayjs from 'dayjs';
 
 const Dashboard: React.FC = () => {
   const state = useSelector((state: RootState) => state.app);
+  const navigate = useNavigate();
 
   const today = new Date().toISOString().split('T')[0];
+
+  // 仪器保养提醒：到期与超期分开标记
+  const cancelledIds = new Set(
+    state.appointments
+      .filter((a) => a.status === 'cancelled' || a.status === 'no_show')
+      .map((a) => a.id)
+  );
+  const maintenanceAlerts = state.instruments
+    .filter((ins) => ins.status === 'active')
+    .map((ins) => ({
+      instrument: ins,
+      info: getMaintenanceInfo(
+        ins,
+        state.instrumentUsages,
+        state.instrumentMaintenances,
+        cancelledIds
+      )
+    }))
+    .filter(({ info }) => info.status === 'due' || info.status === 'overdue')
+    .sort((a, b) => {
+      const rank = { overdue: 0, due: 1 } as const;
+      return rank[a.info.status as 'overdue' | 'due'] - rank[b.info.status as 'overdue' | 'due'];
+    });
 
   const completedRecords = state.serviceRecords.filter(
     (r) => r.serviceDate.split('T')[0] === today
@@ -258,6 +287,84 @@ const Dashboard: React.FC = () => {
           </Col>
         ))}
       </Row>
+
+      {maintenanceAlerts.length > 0 && (
+        <Card
+          className="card-wrapper"
+          bordered={false}
+          style={{ marginTop: 16 }}
+          title={
+            <Space>
+              <ToolOutlined style={{ color: '#C9A86C' }} />
+              <span>仪器保养提醒</span>
+              <Tag color="red">
+                超期 {maintenanceAlerts.filter((a) => a.info.status === 'overdue').length}
+              </Tag>
+              <Tag color="orange">
+                到期 {maintenanceAlerts.filter((a) => a.info.status === 'due').length}
+              </Tag>
+            </Space>
+          }
+          extra={
+            <Button type="link" onClick={() => navigate('/instruments')}>
+              查看台账
+            </Button>
+          }
+        >
+          <List
+            size="small"
+            dataSource={maintenanceAlerts.slice(0, 6)}
+            renderItem={({ instrument, info }) => {
+              const meta = MAINTENANCE_STATUS_META[info.status];
+              const diff = info.nextDueDate.diff(dayjs().startOf('day'), 'day');
+              return (
+                <List.Item
+                  actions={[
+                    <Button
+                      key="go"
+                      type="link"
+                      size="small"
+                      onClick={() => navigate(`/instruments/${instrument.id}`)}
+                    >
+                      去处理
+                    </Button>
+                  ]}
+                >
+                  <List.Item.Meta
+                    avatar={
+                      info.status === 'overdue' ? (
+                        <WarningOutlined style={{ fontSize: 22, color: '#ff4d4f' }} />
+                      ) : (
+                        <ToolOutlined style={{ fontSize: 22, color: '#fa8c16' }} />
+                      )
+                    }
+                    title={
+                      <Space>
+                        <a onClick={() => navigate(`/instruments/${instrument.id}`)}>
+                          {instrument.name}（{instrument.code}）
+                        </a>
+                        <Tag color={meta.color}>{meta.text}</Tag>
+                        <span style={{ color: '#8c8c8c', fontWeight: 400, fontSize: 12 }}>
+                          {instrument.room}
+                        </span>
+                      </Space>
+                    }
+                    description={
+                      <Space size={16} wrap>
+                        <span>{info.reasons.join('；')}</span>
+                        <span style={{ color: '#8c8c8c', fontSize: 12 }}>
+                          到期日 {info.nextDueDate.format('YYYY-MM-DD')}
+                          {diff < 0 ? ` · 已超 ${Math.abs(diff)} 天` : diff === 0 ? ' · 今天' : ''}
+                        </span>
+                      </Space>
+                    }
+                  />
+                </List.Item>
+              );
+            }}
+          />
+        </Card>
+      )}
 
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24} lg={16}>

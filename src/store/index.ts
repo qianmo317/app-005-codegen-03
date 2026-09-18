@@ -1,4 +1,4 @@
-import { configureStore, createSlice, PayloadAction, combineReducers } from '@reduxjs/toolkit';
+import { configureStore, createSlice, PayloadAction } from '@reduxjs/toolkit';
 import { storage } from '../utils/storage';
 import type {
   Customer,
@@ -15,7 +15,10 @@ import type {
   Review,
   Attendance,
   Commission,
-  WaitList
+  WaitList,
+  Instrument,
+  InstrumentUsage,
+  MaintenanceRecord
 } from '../types';
 import {
   mockCustomers,
@@ -32,7 +35,8 @@ import {
   mockReviews,
   mockAttendance,
   mockCommissions,
-  mockWaitList
+  mockWaitList,
+  mockInstruments
 } from '../mock';
 
 interface AppState {
@@ -51,6 +55,9 @@ interface AppState {
   attendance: Attendance[];
   commissions: Commission[];
   waitList: WaitList[];
+  instruments: Instrument[];
+  instrumentUsages: InstrumentUsage[];
+  instrumentMaintenances: MaintenanceRecord[];
   initialized: boolean;
 }
 
@@ -66,6 +73,13 @@ const loadState = (): AppState => {
         const b64 = firstCustomer.avatar.replace('data:image/svg+xml;base64,', '');
         try {
           atob(b64);
+          // 兼容旧版本数据：补齐仪器台账模块
+          if (!saved.instruments || !saved.instrumentUsages || !saved.instrumentMaintenances) {
+            const instrumentData = mockInstruments();
+            saved.instruments = instrumentData.instruments as Instrument[];
+            saved.instrumentUsages = instrumentData.instrumentUsages as InstrumentUsage[];
+            saved.instrumentMaintenances = instrumentData.instrumentMaintenances as MaintenanceRecord[];
+          }
           return saved;
         } catch (e) {
           console.log('Detected corrupted data, regenerating...');
@@ -84,6 +98,8 @@ const loadState = (): AppState => {
   const employees = mockEmployees() as Employee[];
   const employeeIds = employees.map(e => e.id);
   const packages = mockPackages() as Package[];
+  const instrumentData = mockInstruments();
+  const instruments = instrumentData.instruments as Instrument[];
 
   return {
     customers,
@@ -94,13 +110,16 @@ const loadState = (): AppState => {
     packages,
     packageItems: mockPackageItems(packages),
     employees,
-    appointments: mockAppointments(customerIds, serviceIds, employeeIds),
+    appointments: mockAppointments(customerIds, serviceIds, employeeIds, instruments),
     serviceRecords: mockServiceRecords(customerIds, serviceIds, employeeIds),
     schedules: mockSchedules(employeeIds),
     reviews: mockReviews(customerIds, employeeIds, serviceIds),
     attendance: mockAttendance(employeeIds),
     commissions: mockCommissions(employeeIds),
     waitList: mockWaitList(customerIds, serviceIds),
+    instruments,
+    instrumentUsages: instrumentData.instrumentUsages as InstrumentUsage[],
+    instrumentMaintenances: instrumentData.instrumentMaintenances as MaintenanceRecord[],
     initialized: true
   };
 };
@@ -177,17 +196,51 @@ const appSlice = createSlice({
     },
     addAppointment: (state, action: PayloadAction<Appointment>) => {
       state.appointments.unshift(action.payload);
+      // 预约确认即占用仪器时段（取消/爽约状态不占用）
+      if (action.payload.instrumentId && !['cancelled', 'no_show'].includes(action.payload.status)) {
+        state.instrumentUsages.unshift({
+          id: `usage_${action.payload.id}`,
+          instrumentId: action.payload.instrumentId,
+          startTime: action.payload.startTime,
+          endTime: action.payload.endTime,
+          durationMinutes: action.payload.duration,
+          customerId: action.payload.customerId,
+          serviceId: action.payload.serviceId,
+          appointmentId: action.payload.id,
+          purpose: '预约项目',
+          createdAt: new Date().toISOString()
+        });
+      }
       saveState(state);
     },
     updateAppointment: (state, action: PayloadAction<Appointment>) => {
       const index = state.appointments.findIndex(a => a.id === action.payload.id);
       if (index !== -1) {
         state.appointments[index] = action.payload;
+        // 同步仪器占用：先移除旧记录，再按新状态决定是否重新占用
+        state.instrumentUsages = state.instrumentUsages.filter(
+          u => u.appointmentId !== action.payload.id
+        );
+        if (action.payload.instrumentId && !['cancelled', 'no_show'].includes(action.payload.status)) {
+          state.instrumentUsages.unshift({
+            id: `usage_${action.payload.id}`,
+            instrumentId: action.payload.instrumentId,
+            startTime: action.payload.startTime,
+            endTime: action.payload.endTime,
+            durationMinutes: action.payload.duration,
+            customerId: action.payload.customerId,
+            serviceId: action.payload.serviceId,
+            appointmentId: action.payload.id,
+            purpose: '预约项目',
+            createdAt: new Date().toISOString()
+          });
+        }
         saveState(state);
       }
     },
     deleteAppointment: (state, action: PayloadAction<string>) => {
       state.appointments = state.appointments.filter(a => a.id !== action.payload);
+      state.instrumentUsages = state.instrumentUsages.filter(u => u.appointmentId !== action.payload);
       saveState(state);
     },
     addEmployee: (state, action: PayloadAction<Employee>) => {
@@ -237,6 +290,47 @@ const appSlice = createSlice({
         else if (membership.totalSpent > 5000) membership.level = 'silver';
       }
       saveState(state);
+    },
+    // ---------- 仪器台账 ----------
+    addInstrument: (state, action: PayloadAction<Instrument>) => {
+      state.instruments.unshift(action.payload);
+      saveState(state);
+    },
+    updateInstrument: (state, action: PayloadAction<Instrument>) => {
+      const index = state.instruments.findIndex(i => i.id === action.payload.id);
+      if (index !== -1) {
+        state.instruments[index] = action.payload;
+        saveState(state);
+      }
+    },
+    deleteInstrument: (state, action: PayloadAction<string>) => {
+      // 保养记录跟着仪器走：删除仪器时一并清除其使用与保养记录、解除预约关联
+      state.instruments = state.instruments.filter(i => i.id !== action.payload);
+      state.instrumentUsages = state.instrumentUsages.filter(u => u.instrumentId !== action.payload);
+      state.instrumentMaintenances = state.instrumentMaintenances.filter(m => m.instrumentId !== action.payload);
+      state.appointments.forEach(a => {
+        if (a.instrumentId === action.payload) a.instrumentId = undefined;
+      });
+      saveState(state);
+    },
+    addInstrumentUsage: (state, action: PayloadAction<InstrumentUsage>) => {
+      state.instrumentUsages.unshift(action.payload);
+      saveState(state);
+    },
+    updateInstrumentUsage: (state, action: PayloadAction<InstrumentUsage>) => {
+      const index = state.instrumentUsages.findIndex(u => u.id === action.payload.id);
+      if (index !== -1) {
+        state.instrumentUsages[index] = action.payload;
+        saveState(state);
+      }
+    },
+    deleteInstrumentUsage: (state, action: PayloadAction<string>) => {
+      state.instrumentUsages = state.instrumentUsages.filter(u => u.id !== action.payload);
+      saveState(state);
+    },
+    addMaintenance: (state, action: PayloadAction<MaintenanceRecord>) => {
+      state.instrumentMaintenances.unshift(action.payload);
+      saveState(state);
     }
   }
 });
@@ -263,7 +357,14 @@ export const {
   addWaitList,
   updateWaitList,
   deleteWaitList,
-  addServiceRecord
+  addServiceRecord,
+  addInstrument,
+  updateInstrument,
+  deleteInstrument,
+  addInstrumentUsage,
+  updateInstrumentUsage,
+  deleteInstrumentUsage,
+  addMaintenance
 } = appSlice.actions;
 
 export const store = configureStore({

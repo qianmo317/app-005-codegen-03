@@ -1,4 +1,5 @@
 import Mock from 'mockjs';
+import dayjs from 'dayjs';
 
 const Random = Mock.Random;
 
@@ -217,11 +218,13 @@ export const mockEmployees = () => {
 export const mockAppointments = (
   customerIds: string[],
   serviceIds: string[],
-  employeeIds: string[]
+  employeeIds: string[],
+  instruments: { id: string; status: string }[] = []
 ) => {
   const appointments = [];
   const statuses = ['pending', 'confirmed', 'completed', 'cancelled', 'no_show'];
   const sources = ['phone', 'wechat', 'walk_in', 'online'];
+  const activeInstruments = instruments.filter((i) => i.status === 'active');
 
   for (let i = 0; i < 150; i++) {
     const startDate = new Date();
@@ -236,6 +239,10 @@ export const mockAppointments = (
       customerId: customerIds[Random.integer(0, customerIds.length - 1)],
       serviceId: serviceIds[Random.integer(0, serviceIds.length - 1)],
       employeeId: employeeIds[Random.integer(0, employeeIds.length - 1)],
+      instrumentId:
+        activeInstruments.length > 0 && Math.random() < 0.6
+          ? activeInstruments[Random.integer(0, activeInstruments.length - 1)].id
+          : undefined,
       startTime: startDate.toISOString(),
       endTime: endDate.toISOString(),
       duration,
@@ -417,3 +424,136 @@ export const mockWaitList = (customerIds: string[], serviceIds: string[]) => {
   }
   return waitList;
 };
+
+// ---------- 仪器台账 ----------
+
+// ratio 指实际累计时长相对阈值的倍数：0.92→即将到期 1.0→到期 0.6→正常
+
+export const mockInstruments = () => {
+  const configs = [
+    // [编号, 名称, 品牌型号, 购进距今天数, 房间, 周期天, 上次保养距今天数, 状态, 时长倍数, 场景说明]
+    ['YQ-001', '射频美容仪', '以色列 EndyMed Pro', 420, 'V101', 90, 20, 'active', 0.35, '正常'],
+    ['YQ-002', '光子嫩肤仪', 'M22 王者之冠', 600, 'V102', 90, 110, 'active', 0.3, '时间已超期'],
+    ['YQ-003', '超声波导入仪', '日立 N5000', 300, 'V103', 180, 85, 'active', 0.92, '时长即将到期'],
+    ['YQ-004', '小气泡清洁仪', '德玛贝尔 3代', 360, 'V101', 365, 90, 'active', 1.0, '时长到期'],
+    ['YQ-005', '冷热喷雾机', '泰东 839', 500, 'V104', 90, 88, 'active', 0.55, '时间即将到期'],
+    ['YQ-006', '高周波电疗仪', '松下 EH-XE10', 700, 'V105', 180, 210, 'active', 0.95, '时间超期+时长到期'],
+    ['YQ-007', '激光脱毛仪', '飞顿 Alma', 550, 'V102', 120, 150, 'inactive', 0.4, '停用且超期（不许直接启用）'],
+    ['YQ-008', '皮肤检测仪', '美测 V8', 200, 'V106', 365, 60, 'inactive', 0.25, '停用保养正常'],
+    ['YQ-009', '微波瘦身仪', '维纳斯 V9', 480, 'V105', 180, 30, 'active', 0.45, '正常'],
+    ['YQ-010', '水光针注射仪', '德玛莎 3代', 640, 'V103', 120, 115, 'active', 1.05, '时长超期'],
+  ];
+
+  const instruments = configs.map((c, i) => {
+    const purchaseDate = dayjs().subtract(c[3] as number, 'day').format('YYYY-MM-DD');
+    return {
+      id: `I${String(i + 1).padStart(4, '0')}`,
+      code: c[0],
+      name: c[1],
+      brand: c[2],
+      purchaseDate,
+      room: c[4],
+      usageLimitMinutes: 10000, // 先给占位，生成使用记录后按倍数回填
+      maintenanceIntervalDays: c[5],
+      status: c[7],
+      notes: c[9],
+      createdAt: dayjs(purchaseDate).startOf('day').toISOString()
+    };
+  });
+
+  const usages = [];
+  const maintenances = [];
+  let usageSeq = 1;
+  let maintSeq = 1;
+  const startHourPool = [9, 10, 11, 13, 14, 15, 16, 17, 18, 19];
+
+  configs.forEach((c, idx) => {
+    const instrument = instruments[idx];
+    const lastMaintAgo = c[6] as number;
+    const ratio = c[8] as number;
+    const inactive = c[7] === 'inactive';
+
+    // 保养历史：最近一次按配置，之前再补 1-2 次历史记录
+    const latestMaint = dayjs().subtract(lastMaintAgo, 'day').startOf('day').hour(18);
+    const historyCount = lastMaintAgo > (c[5] as number) ? Random.integer(1, 2) : Random.integer(0, 1);
+    const maintDates = [latestMaint];
+    for (let h = 1; h <= historyCount; h++) {
+      maintDates.push(
+        latestMaint.subtract((c[5] as number) * h + Random.integer(0, 10), 'day')
+      );
+    }
+    maintDates.forEach((date, mi) => {
+      if (dayjs(instrument.purchaseDate).valueOf() > date.valueOf()) return;
+      const types = [
+        { type: 'completed', content: '常规清洁保养，检查探头及管路', cost: 80 },
+        { type: 'parts_replaced', content: '更换滤芯与密封圈', cost: 260 },
+        { type: 'repair', content: '故障维修，校准输出功率', cost: 450 }
+      ];
+      const t = types[mi % types.length];
+      maintenances.push({
+        id: `MR${String(maintSeq++).padStart(6, '0')}`,
+        instrumentId: instrument.id,
+        maintenanceDate: date.toISOString(),
+        type: t.type,
+        content: t.content,
+        operator: ['周师傅', '厂家售后', '李技师'][Random.integer(0, 2)],
+        cost: t.cost + Random.integer(0, 5) * 10,
+        notes: mi === 0 ? '' : '历史保养记录',
+        createdAt: date.toISOString()
+      });
+    });
+
+    // 当前保养周期内的使用记录（从保养次日开始，到昨天为止）
+    const cycleStart = latestMaint.add(1, 'day');
+    const days = Math.max(0, dayjs().startOf('day').diff(cycleStart, 'day') - 1);
+    const generated: { start: dayjs.Dayjs; end: dayjs.Dayjs }[] = [];
+    // 每天最多 2 次，用概率控制总量；停用仪器停用后（最近30天）不再产生使用
+    for (let d = 0; d <= days; d++) {
+      const day = cycleStart.add(d, 'day');
+      if (inactive && day.isAfter(dayjs().subtract(30, 'day'))) continue;
+      const roll = Math.random();
+      const count = roll < 0.45 ? 0 : roll < 0.88 ? 1 : 2;
+      const pickedHours = [...startHourPool].sort(() => Math.random() - 0.5);
+      for (let k = 0; k < count; k++) {
+        const hour = pickedHours[k];
+        const minute = [0, 15, 30, 45][Random.integer(0, 3)];
+        const start = dayjs(day)
+          .hour(hour)
+          .minute(minute)
+          .second(0)
+          .millisecond(0);
+        const duration = Random.integer(3, 12) * 10;
+        const end = start.add(duration, 'minute');
+        // 同日同仪器避免时段重叠
+        const clash = generated.some((g) =>
+          start.valueOf() < g.end.valueOf() && end.valueOf() > g.start.valueOf()
+        );
+        if (clash) continue;
+        generated.push({ start, end });
+        usages.push({
+          id: `IU${String(usageSeq++).padStart(6, '0')}`,
+          instrumentId: instrument.id,
+          startTime: start.toISOString(),
+          endTime: end.toISOString(),
+          durationMinutes: duration,
+          purpose: ['面部护理', '身体护理', '补水导入', '清洁护理', '脱毛项目'][
+            Random.integer(0, 4)
+          ],
+          createdAt: start.toISOString()
+        });
+      }
+    }
+
+    // 按目标倍数回填时长阈值：limit = 实际时长 / ratio
+    const totalMinutes = usages
+      .filter((u) => u.instrumentId === instrument.id)
+      .reduce((sum, u) => sum + u.durationMinutes, 0);
+    instrument.usageLimitMinutes = Math.max(
+      60,
+      Math.round(totalMinutes / Math.max(ratio, 0.01) / 10) * 10
+    );
+  });
+
+  return { instruments, instrumentUsages: usages, instrumentMaintenances: maintenances };
+};
+

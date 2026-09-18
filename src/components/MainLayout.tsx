@@ -9,7 +9,8 @@ import {
   UserOutlined,
   LogoutOutlined,
   SettingOutlined,
-  BellOutlined
+  BellOutlined,
+  ToolOutlined
 } from '@ant-design/icons';
 import { useNavigate, useLocation } from 'react-router-dom';
 
@@ -53,6 +54,11 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       key: '/employees',
       icon: <UserOutlined />,
       label: '员工管理',
+    },
+    {
+      key: '/instruments',
+      icon: <ToolOutlined />,
+      label: '仪器台账',
     },
   ];
 
@@ -103,7 +109,10 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         <Sider width={220} theme="light" className="app-sidebar">
           <Menu
             mode="inline"
-            selectedKeys={[location.pathname]}
+            selectedKeys={[
+              menuItems.find((item) => location.pathname.startsWith(item.key))?.key ||
+                location.pathname
+            ]}
             items={menuItems}
             onClick={({ key }) => navigate(key)}
             style={{ height: '100%', borderInlineEnd: 'none' }}

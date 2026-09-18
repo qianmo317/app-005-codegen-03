@@ -14,8 +14,8 @@ import {
   message,
   List,
   Avatar,
-  Tooltip,
-  Input
+  Input,
+  Alert
 } from 'antd';
 import {
   PlusOutlined,
@@ -31,6 +31,12 @@ import type { RootState } from '../../store';
 import { addAppointment, updateAppointment, deleteAppointment, addWaitList } from '../../store';
 import type { Appointment, WaitList } from '../../types';
 import { formatDate, formatTime, formatCurrency, generateId, getStatusText, getStatusColor } from '../../utils/format';
+import {
+  getMaintenanceInfo,
+  MAINTENANCE_STATUS_META,
+  findUsageConflict,
+  formatMinutes
+} from '../../utils/instrument';
 import dayjs from 'dayjs';
 
 const AppointmentCalendar: React.FC = () => {
@@ -39,8 +45,52 @@ const AppointmentCalendar: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [form] = Form.useForm();
+  const selectedInstrumentId = Form.useWatch('instrumentId', form);
 
   const selectedDateStr = dayjs(selectedDate).format('YYYY-MM-DD');
+
+  // 取消/爽约的预约不再占用仪器时段
+  const cancelledAppointmentIds = new Set(
+    state.appointments
+      .filter((a) => a.status === 'cancelled' || a.status === 'no_show')
+      .map((a) => a.id)
+  );
+
+  // 停用的仪器不能再被排到项目里；同时展示保养到期/超期标记
+  const instrumentOptions = state.instruments
+    .filter((ins) => ins.status === 'active')
+    .map((ins) => {
+      const info = getMaintenanceInfo(
+        ins,
+        state.instrumentUsages,
+        state.instrumentMaintenances,
+        cancelledAppointmentIds
+      );
+      const meta = MAINTENANCE_STATUS_META[info.status];
+      const statusText =
+        info.status === 'normal'
+          ? ''
+          : info.status === 'due_soon'
+          ? `（${meta.text}）`
+          : `（${meta.text}！）`;
+      return {
+        value: ins.id,
+        label: `${ins.code} ${ins.name} · ${ins.room}${statusText}`,
+        info
+      };
+    });
+
+  const selectedInstrument = selectedInstrumentId
+    ? state.instruments.find((i) => i.id === selectedInstrumentId)
+    : undefined;
+  const selectedInstrumentInfo = selectedInstrument
+    ? getMaintenanceInfo(
+        selectedInstrument,
+        state.instrumentUsages,
+        state.instrumentMaintenances,
+        cancelledAppointmentIds
+      )
+    : undefined;
 
   const dayAppointments = state.appointments
     .filter((a) => a.startTime.split('T')[0] === selectedDateStr)
@@ -83,11 +133,39 @@ const AppointmentCalendar: React.FC = () => {
       const duration = service?.duration || 60;
       const endTime = startTime.add(duration, 'minute');
 
+      // 仪器时段冲突：同一台仪器同一时段不能同时被两个项目占用
+      if (values.instrumentId) {
+        const instrument = state.instruments.find((i) => i.id === values.instrumentId);
+        if (!instrument || instrument.status === 'inactive') {
+          message.error('该仪器已停用，不能安排到项目中');
+          return;
+        }
+        const usageConflict = findUsageConflict(
+          values.instrumentId,
+          startTime,
+          endTime,
+          state.instrumentUsages,
+          cancelledAppointmentIds
+        );
+        if (usageConflict) {
+          const conflictService = state.services.find((s) => s.id === usageConflict.serviceId);
+          Modal.error({
+            title: '仪器时段冲突',
+            content: `${instrument.name} 在 ${formatTime(usageConflict.startTime)}-${formatTime(
+              usageConflict.endTime
+            )} 已用于「${conflictService?.name || usageConflict.purpose || '其他项目'}」，请更换仪器或时间。`,
+            okText: '知道了'
+          });
+          return;
+        }
+      }
+
       const newAppointment: Appointment = {
         id: generateId(),
         customerId: values.customerId,
         serviceId: values.serviceId,
         employeeId: values.employeeId,
+        instrumentId: values.instrumentId,
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),
         duration,
@@ -158,15 +236,6 @@ const AppointmentCalendar: React.FC = () => {
     });
   };
 
-  const availableEmployees = (serviceId: string) => {
-    return state.employees.filter(
-      (e) =>
-        (e.role === 'beautician' || e.role === 'technician') &&
-        e.status === 'active' &&
-        (e.skills.includes(serviceId) || serviceId === undefined)
-    );
-  };
-
   return (
     <div>
       <div className="page-header">
@@ -206,6 +275,17 @@ const AppointmentCalendar: React.FC = () => {
                 const customer = state.customers.find((c) => c.id === appointment.customerId);
                 const service = state.services.find((s) => s.id === appointment.serviceId);
                 const employee = state.employees.find((e) => e.id === appointment.employeeId);
+                const instrument = appointment.instrumentId
+                  ? state.instruments.find((i) => i.id === appointment.instrumentId)
+                  : undefined;
+                const instrumentInfo = instrument
+                  ? getMaintenanceInfo(
+                      instrument,
+                      state.instrumentUsages,
+                      state.instrumentMaintenances,
+                      cancelledAppointmentIds
+                    )
+                  : undefined;
 
                 return (
                   <div
@@ -221,6 +301,27 @@ const AppointmentCalendar: React.FC = () => {
                             <div style={{ fontSize: 12, color: '#8c8c8c' }}>
                               {service?.name} · {employee?.name}
                             </div>
+                            {instrument && (
+                              <div style={{ fontSize: 12, marginTop: 2 }}>
+                                <Tag
+                                  color={
+                                    instrument.status === 'inactive'
+                                      ? 'default'
+                                      : MAINTENANCE_STATUS_META[instrumentInfo!.status].color
+                                  }
+                                  style={{ marginInlineEnd: 4 }}
+                                >
+                                  {instrument.code} {instrument.name}
+                                  {instrument.status === 'inactive'
+                                    ? '（已停用）'
+                                    : instrumentInfo!.status === 'overdue'
+                                    ? '（保养超期）'
+                                    : instrumentInfo!.status === 'due'
+                                    ? '（保养到期）'
+                                    : ''}
+                                </Tag>
+                              </div>
+                            )}
                           </div>
                         </Space>
                       </div>
@@ -351,6 +452,52 @@ const AppointmentCalendar: React.FC = () => {
                 }))}
             />
           </Form.Item>
+          <Form.Item
+            name="instrumentId"
+            label="使用仪器"
+            tooltip="停用的仪器不可选；同一台仪器同一时段不能同时被两个项目占用"
+          >
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="该项目需要使用仪器时选择"
+              options={instrumentOptions}
+            />
+          </Form.Item>
+          {selectedInstrument && selectedInstrumentInfo && (
+            <div style={{ marginTop: -8, marginBottom: 16 }}>
+              {selectedInstrumentInfo.status === 'overdue' && (
+                <Alert
+                  type="error"
+                  showIcon
+                  message={`该仪器保养已超期（本周期已用 ${formatMinutes(
+                    selectedInstrumentInfo.usedMinutes
+                  )}，${selectedInstrumentInfo.reasons.join('；')}）`}
+                  description="建议先安排保养，或改用其他仪器。"
+                />
+              )}
+              {selectedInstrumentInfo.status === 'due' && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={`该仪器保养已到期（本周期已用 ${formatMinutes(
+                    selectedInstrumentInfo.usedMinutes
+                  )}）`}
+                  description="仍可安排使用，但请尽快完成保养。"
+                />
+              )}
+              {selectedInstrumentInfo.status === 'due_soon' && (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={`该仪器保养即将到期（下次 ${selectedInstrumentInfo.nextDueDate.format(
+                    'MM-DD'
+                  )}）`}
+                />
+              )}
+            </div>
+          )}
           <Row gutter={16}>
             <Col span={12}>
               <Form.Item
