@@ -417,3 +417,164 @@ export const mockWaitList = (customerIds: string[], serviceIds: string[]) => {
   }
   return waitList;
 };
+
+const daysAgoDate = (n: number): Date => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d;
+};
+
+const dateStr = (d: Date): string => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const monthsAgoStr = (months: number, extraDays = 0): string => {
+  const d = new Date();
+  d.setMonth(d.getMonth() - months);
+  d.setDate(d.getDate() - extraDays);
+  return dateStr(d);
+};
+
+export const mockDevices = () => {
+  const now = new Date().toISOString();
+  return [
+    { id: 'D001', code: 'EQ-001', name: '小气泡清洁仪', model: 'AQ-2000', room: '101室', purchaseDate: monthsAgoStr(14), status: 'active', maintenanceIntervalHours: 200, maintenanceIntervalMonths: 6, lastMaintenanceDate: monthsAgoStr(2), hoursAtLastMaintenance: 0, notes: '面部深层清洁主力设备', createdAt: now },
+    { id: 'D002', code: 'EQ-002', name: '光子嫩肤仪', model: 'IPL-Pro', room: '102室', purchaseDate: monthsAgoStr(20), status: 'active', maintenanceIntervalHours: 300, maintenanceIntervalMonths: 6, lastMaintenanceDate: monthsAgoStr(7), hoursAtLastMaintenance: 0, notes: '', createdAt: now },
+    { id: 'D003', code: 'EQ-003', name: '射频紧肤仪', model: 'RF-300', room: '102室', purchaseDate: monthsAgoStr(10), status: 'active', maintenanceIntervalHours: 100, maintenanceIntervalMonths: 12, lastMaintenanceDate: monthsAgoStr(2), hoursAtLastMaintenance: 0, notes: '使用时注意探头温度', createdAt: now },
+    { id: 'D004', code: 'EQ-004', name: '超声刀美容仪', model: 'UF-100', room: '103室', purchaseDate: monthsAgoStr(1), status: 'active', maintenanceIntervalHours: 150, maintenanceIntervalMonths: 6, lastMaintenanceDate: null, hoursAtLastMaintenance: 0, notes: '新购进设备', createdAt: now },
+    { id: 'D005', code: 'EQ-005', name: '半导体脱毛仪', model: 'HR-808', room: '103室', purchaseDate: monthsAgoStr(16), status: 'active', maintenanceIntervalHours: 250, maintenanceIntervalMonths: 6, lastMaintenanceDate: monthsAgoStr(2), hoursAtLastMaintenance: 0, notes: '', createdAt: now },
+    { id: 'D006', code: 'EQ-006', name: '水光注射仪', model: 'HY-50', room: '105室', purchaseDate: monthsAgoStr(12), status: 'active', maintenanceIntervalHours: 500, maintenanceIntervalMonths: 6, lastMaintenanceDate: monthsAgoStr(5, 25), hoursAtLastMaintenance: 0, notes: '', createdAt: now },
+    { id: 'D007', code: 'EQ-007', name: '头皮检测护理仪', model: 'SC-10', room: '106室', purchaseDate: monthsAgoStr(9), status: 'maintenance', maintenanceIntervalHours: 180, maintenanceIntervalMonths: 6, lastMaintenanceDate: monthsAgoStr(3), hoursAtLastMaintenance: 0, notes: '探头故障，待厂家检修', createdAt: now },
+    { id: 'D008', code: 'EQ-008', name: '老式美甲光疗机', model: 'NL-36W', room: '库房', purchaseDate: monthsAgoStr(36), status: 'disabled', maintenanceIntervalHours: 100, maintenanceIntervalMonths: 3, lastMaintenanceDate: monthsAgoStr(10), hoursAtLastMaintenance: 0, notes: '灯管老化，已停用待报废', createdAt: now }
+  ];
+};
+
+export const mockDeviceUsages = (
+  devices: ReturnType<typeof mockDevices>,
+  serviceIds: string[],
+  employeeIds: string[]
+) => {
+  // 每台仪器自上次保养以来的目标使用分钟数，用于演示到期/超期提醒
+  const targetMinutesSinceMaintenance: Record<string, number> = {
+    D001: 195 * 60,
+    D002: 50 * 60,
+    D003: 112 * 60,
+    D004: 32 * 60,
+    D005: 100 * 60,
+    D006: 20 * 60,
+    D007: 25 * 60,
+    D008: 0
+  };
+
+  const usages: {
+    id: string;
+    deviceId: string;
+    serviceId?: string;
+    operatorId?: string;
+    date: string;
+    startTime: string;
+    endTime: string;
+    duration: number;
+    notes: string;
+  }[] = [];
+
+  devices.forEach((device) => {
+    const target = targetMinutesSinceMaintenance[device.id] ?? 0;
+    const historyStart = new Date(device.purchaseDate);
+    const maintenanceStart = device.lastMaintenanceDate
+      ? new Date(device.lastMaintenanceDate)
+      : null;
+
+    // 先生成上次保养前的历史使用（最多追溯90天），再生成保养后的使用
+    const segments: { from: Date; to: Date; totalMinutes: number }[] = [];
+    const ninetyDaysAgo = daysAgoDate(90);
+    if (maintenanceStart && maintenanceStart > ninetyDaysAgo && historyStart < maintenanceStart) {
+      const from = historyStart > ninetyDaysAgo ? historyStart : ninetyDaysAgo;
+      segments.push({ from, to: maintenanceStart, totalMinutes: Random.integer(20, 80) * 60 });
+    }
+    if (target > 0) {
+      const from = maintenanceStart && maintenanceStart > historyStart ? maintenanceStart : historyStart;
+      segments.push({ from: from > daysAgoDate(60) ? from : daysAgoDate(60), to: new Date(), totalMinutes: target });
+    }
+
+    segments.forEach((segment) => {
+      let remaining = segment.totalMinutes;
+      const totalDays = Math.max(1, Math.floor((segment.to.getTime() - segment.from.getTime()) / (1000 * 60 * 60 * 24)));
+      let dayOffset = 0;
+
+      while (remaining > 0 && dayOffset <= totalDays) {
+        const day = new Date(segment.from);
+        day.setDate(day.getDate() + dayOffset);
+        // 目标时长均匀分摊到每一天，同一天可能使用多次，时长合并计入台账
+        const daysLeft = totalDays - dayOffset + 1;
+        const dayTarget = Math.ceil(remaining / daysLeft);
+        let dayUsed = 0;
+        let cursor = 9 * 60; // 当天从09:00开始排（分钟）
+
+        while (dayUsed < dayTarget && remaining > 0) {
+          const duration = Math.min(
+            dayTarget - dayUsed,
+            remaining,
+            [45, 60, 75, 90, 105, 120][Random.integer(0, 5)]
+          );
+          if (duration <= 0 || cursor + duration > 21 * 60) break;
+          const start = new Date(day);
+          start.setHours(Math.floor(cursor / 60), cursor % 60, 0, 0);
+          const end = new Date(start.getTime() + duration * 60 * 1000);
+          cursor += duration + 30; // 两次使用之间留间隔，避免同时段占用
+
+          usages.push({
+            id: `DU${String(usages.length + 1).padStart(6, '0')}`,
+            deviceId: device.id,
+            serviceId: serviceIds[Random.integer(0, serviceIds.length - 1)],
+            operatorId: employeeIds[Random.integer(0, employeeIds.length - 1)],
+            date: dateStr(day),
+            startTime: start.toISOString(),
+            endTime: end.toISOString(),
+            duration,
+            notes: ''
+          });
+          dayUsed += duration;
+          remaining -= duration;
+        }
+        dayOffset += 1;
+      }
+    });
+  });
+
+  // 回填“上次保养时累计小时数”，使保养后使用时长与目标一致
+  devices.forEach((device) => {
+    const total = usages
+      .filter((u) => u.deviceId === device.id)
+      .reduce((sum, u) => sum + u.duration, 0);
+    const target = targetMinutesSinceMaintenance[device.id] ?? 0;
+    device.hoursAtLastMaintenance = Math.max(0, (total - target) / 60);
+  });
+
+  return usages;
+};
+
+export const mockMaintenanceRecords = () => {
+  const records = [
+    { deviceId: 'D001', maintenanceDate: monthsAgoStr(8), type: 'routine', description: '更换滤芯，清洁手柄管路', cost: 260, performedBy: '李师傅', status: 'completed', completedAt: monthsAgoStr(8), notes: '' },
+    { deviceId: 'D001', maintenanceDate: monthsAgoStr(2), type: 'routine', description: '常规保养，校准负压', cost: 180, performedBy: '李师傅', status: 'completed', completedAt: monthsAgoStr(2), notes: '' },
+    { deviceId: 'D002', maintenanceDate: monthsAgoStr(13), type: 'routine', description: '更换灯管，清洁滤光片', cost: 680, performedBy: '厂家售后', status: 'completed', completedAt: monthsAgoStr(13), notes: '' },
+    { deviceId: 'D002', maintenanceDate: monthsAgoStr(7), type: 'routine', description: '常规保养，检测能量输出', cost: 300, performedBy: '厂家售后', status: 'completed', completedAt: monthsAgoStr(7), notes: '' },
+    { deviceId: 'D003', maintenanceDate: monthsAgoStr(2), type: 'routine', description: '探头清洁，线路检测', cost: 220, performedBy: '王师傅', status: 'completed', completedAt: monthsAgoStr(2), notes: '' },
+    { deviceId: 'D005', maintenanceDate: monthsAgoStr(2), type: 'routine', description: '更换制冷片，校准能量', cost: 450, performedBy: '厂家售后', status: 'completed', completedAt: monthsAgoStr(2), notes: '' },
+    { deviceId: 'D006', maintenanceDate: monthsAgoStr(12), type: 'routine', description: '密封圈更换，压力测试', cost: 320, performedBy: '李师傅', status: 'completed', completedAt: monthsAgoStr(12), notes: '' },
+    { deviceId: 'D006', maintenanceDate: monthsAgoStr(5, 25), type: 'repair', description: '注射泵异响检修', cost: 560, performedBy: '厂家售后', status: 'completed', completedAt: monthsAgoStr(5, 25), notes: '更换轴承' },
+    { deviceId: 'D007', maintenanceDate: monthsAgoStr(3), type: 'routine', description: '常规保养，镜头清洁', cost: 150, performedBy: '王师傅', status: 'completed', completedAt: monthsAgoStr(3), notes: '' },
+    { deviceId: 'D007', maintenanceDate: dateStr(daysAgoDate(1)), type: 'repair', description: '探头无信号，拆机检修中', cost: 0, performedBy: '厂家售后', status: 'in_progress', notes: '等待配件到货' },
+    { deviceId: 'D008', maintenanceDate: monthsAgoStr(22), type: 'routine', description: '更换灯管', cost: 120, performedBy: '李师傅', status: 'completed', completedAt: monthsAgoStr(22), notes: '' },
+    { deviceId: 'D008', maintenanceDate: monthsAgoStr(10), type: 'repair', description: '灯管再次老化，建议停用', cost: 0, performedBy: '李师傅', status: 'completed', completedAt: monthsAgoStr(10), notes: '设备老旧，不再投入保养' }
+  ];
+
+  return records.map((r, i) => ({
+    id: `MR${String(i + 1).padStart(6, '0')}`,
+    ...r
+  }));
+};

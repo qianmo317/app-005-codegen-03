@@ -90,6 +90,7 @@ export interface Appointment {
   customerId: string;
   serviceId: string;
   employeeId: string;
+  deviceId?: string;
   startTime: string;
   endTime: string;
   duration: number;
@@ -97,6 +98,48 @@ export interface Appointment {
   source: 'phone' | 'wechat' | 'walk_in' | 'online';
   notes: string;
   reminderSent: boolean;
+}
+
+export interface Device {
+  id: string;
+  code: string;
+  name: string;
+  model: string;
+  room: string;
+  purchaseDate: string;
+  status: 'active' | 'maintenance' | 'disabled';
+  maintenanceIntervalHours: number;
+  maintenanceIntervalMonths: number;
+  lastMaintenanceDate: string | null;
+  hoursAtLastMaintenance: number;
+  notes: string;
+  createdAt: string;
+}
+
+export interface DeviceUsage {
+  id: string;
+  deviceId: string;
+  appointmentId?: string;
+  serviceId?: string;
+  operatorId?: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  duration: number;
+  notes: string;
+}
+
+export interface MaintenanceRecord {
+  id: string;
+  deviceId: string;
+  maintenanceDate: string;
+  type: 'routine' | 'repair';
+  description: string;
+  cost: number;
+  performedBy: string;
+  status: 'in_progress' | 'completed';
+  completedAt?: string;
+  notes: string;
 }
 
 export interface WaitList {

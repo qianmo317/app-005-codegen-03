@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layout, Menu, Avatar, Dropdown, Space } from 'antd';
+import { Layout, Menu, Avatar, Dropdown, Space, Badge, Tag } from 'antd';
 import {
   DashboardOutlined,
   TeamOutlined,
@@ -9,9 +9,14 @@ import {
   UserOutlined,
   LogoutOutlined,
   SettingOutlined,
-  BellOutlined
+  BellOutlined,
+  ToolOutlined,
+  WarningOutlined
 } from '@ant-design/icons';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useSelector } from 'react-redux';
+import type { RootState } from '../store';
+import { getMaintenanceInfo, MAINTENANCE_STATUS_META } from '../utils/device';
 
 const { Header, Sider, Content } = Layout;
 
@@ -22,6 +27,14 @@ interface MainLayoutProps {
 const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const navigate = useNavigate();
   const location = useLocation();
+  const devices = useSelector((state: RootState) => state.app.devices);
+  const deviceUsages = useSelector((state: RootState) => state.app.deviceUsages);
+
+  const maintenanceReminders = devices
+    .filter((d) => d.status !== 'disabled')
+    .map((d) => ({ device: d, info: getMaintenanceInfo(d, deviceUsages) }))
+    .filter((x) => x.info.status !== 'normal')
+    .sort((a, b) => (a.info.status === 'overdue' ? -1 : 1) - (b.info.status === 'overdue' ? -1 : 1));
 
   const menuItems = [
     {
@@ -43,6 +56,11 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       key: '/appointments',
       icon: <CalendarOutlined />,
       label: '预约排期',
+    },
+    {
+      key: '/devices',
+      icon: <ToolOutlined />,
+      label: '仪器管理',
     },
     {
       key: '/schedules',
@@ -79,6 +97,33 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     ],
   };
 
+  const reminderMenu = {
+    items:
+      maintenanceReminders.length > 0
+        ? maintenanceReminders.map((x) => ({
+            key: x.device.id,
+            icon: <WarningOutlined style={{ color: x.info.status === 'overdue' ? '#ff4d4f' : '#faad14' }} />,
+            label: (
+              <Space>
+                <span>
+                  {x.device.code} {x.device.name}
+                </span>
+                <Tag color={MAINTENANCE_STATUS_META[x.info.status].color} style={{ marginInlineEnd: 0 }}>
+                  {MAINTENANCE_STATUS_META[x.info.status].text}
+                </Tag>
+              </Space>
+            ),
+          }))
+        : [
+            {
+              key: 'empty',
+              label: '暂无保养提醒',
+              disabled: true,
+            },
+          ],
+    onClick: () => navigate('/devices'),
+  };
+
   return (
     <Layout className="app-container">
       <Header className="app-header">
@@ -87,7 +132,11 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
           <span>雅尚美容院管理系统</span>
         </div>
         <Space size="large">
-          <BellOutlined style={{ fontSize: 18, color: '#fff', cursor: 'pointer' }} />
+          <Dropdown menu={reminderMenu} placement="bottomRight" trigger={['click']}>
+            <Badge count={maintenanceReminders.length} size="small" offset={[-2, 2]}>
+              <BellOutlined style={{ fontSize: 18, color: '#fff', cursor: 'pointer' }} />
+            </Badge>
+          </Dropdown>
           <Dropdown menu={userMenu} placement="bottomRight">
             <Space style={{ cursor: 'pointer' }}>
               <Avatar

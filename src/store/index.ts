@@ -15,7 +15,10 @@ import type {
   Review,
   Attendance,
   Commission,
-  WaitList
+  WaitList,
+  Device,
+  DeviceUsage,
+  MaintenanceRecord
 } from '../types';
 import {
   mockCustomers,
@@ -32,7 +35,10 @@ import {
   mockReviews,
   mockAttendance,
   mockCommissions,
-  mockWaitList
+  mockWaitList,
+  mockDevices,
+  mockDeviceUsages,
+  mockMaintenanceRecords
 } from '../mock';
 
 interface AppState {
@@ -51,6 +57,9 @@ interface AppState {
   attendance: Attendance[];
   commissions: Commission[];
   waitList: WaitList[];
+  devices: Device[];
+  deviceUsages: DeviceUsage[];
+  maintenanceRecords: MaintenanceRecord[];
   initialized: boolean;
 }
 
@@ -66,6 +75,15 @@ const loadState = (): AppState => {
         const b64 = firstCustomer.avatar.replace('data:image/svg+xml;base64,', '');
         try {
           atob(b64);
+          // 旧版本数据缺少仪器台账，补充生成
+          if (!saved.devices) {
+            const devices = mockDevices() as Device[];
+            const serviceIds = saved.services.map(s => s.id);
+            const employeeIds = saved.employees.map(e => e.id);
+            saved.devices = devices;
+            saved.deviceUsages = mockDeviceUsages(devices, serviceIds, employeeIds) as DeviceUsage[];
+            saved.maintenanceRecords = mockMaintenanceRecords() as MaintenanceRecord[];
+          }
           return saved;
         } catch (e) {
           console.log('Detected corrupted data, regenerating...');
@@ -84,6 +102,7 @@ const loadState = (): AppState => {
   const employees = mockEmployees() as Employee[];
   const employeeIds = employees.map(e => e.id);
   const packages = mockPackages() as Package[];
+  const devices = mockDevices() as Device[];
 
   return {
     customers,
@@ -101,6 +120,9 @@ const loadState = (): AppState => {
     attendance: mockAttendance(employeeIds),
     commissions: mockCommissions(employeeIds),
     waitList: mockWaitList(customerIds, serviceIds),
+    devices,
+    deviceUsages: mockDeviceUsages(devices, serviceIds, employeeIds) as DeviceUsage[],
+    maintenanceRecords: mockMaintenanceRecords() as MaintenanceRecord[],
     initialized: true
   };
 };
@@ -237,6 +259,86 @@ const appSlice = createSlice({
         else if (membership.totalSpent > 5000) membership.level = 'silver';
       }
       saveState(state);
+    },
+    addDevice: (state, action: PayloadAction<Device>) => {
+      state.devices.unshift(action.payload);
+      saveState(state);
+    },
+    updateDevice: (state, action: PayloadAction<Device>) => {
+      const index = state.devices.findIndex(d => d.id === action.payload.id);
+      if (index !== -1) {
+        state.devices[index] = action.payload;
+        saveState(state);
+      }
+    },
+    setDeviceStatus: (state, action: PayloadAction<{ id: string; status: Device['status'] }>) => {
+      const device = state.devices.find(d => d.id === action.payload.id);
+      if (!device) return;
+      // 保养未完成的仪器不允许重新启用
+      if (action.payload.status === 'active') {
+        const hasOngoing = state.maintenanceRecords.some(
+          r => r.deviceId === device.id && r.status === 'in_progress'
+        );
+        if (hasOngoing) return;
+      }
+      device.status = action.payload.status;
+      saveState(state);
+    },
+    addDeviceUsage: (state, action: PayloadAction<DeviceUsage>) => {
+      const device = state.devices.find(d => d.id === action.payload.deviceId);
+      // 停用/保养中的仪器不能登记使用
+      if (!device || device.status !== 'active') return;
+      // 同一台仪器同一时段不能被两个项目占用
+      const newStart = new Date(action.payload.startTime).getTime();
+      const newEnd = new Date(action.payload.endTime).getTime();
+      const conflict = state.deviceUsages.some(u => {
+        if (u.deviceId !== action.payload.deviceId) return false;
+        const uStart = new Date(u.startTime).getTime();
+        const uEnd = new Date(u.endTime).getTime();
+        return newStart < uEnd && newEnd > uStart;
+      });
+      if (conflict) return;
+      state.deviceUsages.unshift(action.payload);
+      saveState(state);
+    },
+    deleteDeviceUsage: (state, action: PayloadAction<string>) => {
+      state.deviceUsages = state.deviceUsages.filter(u => u.id !== action.payload);
+      saveState(state);
+    },
+    removeDeviceUsagesByAppointment: (state, action: PayloadAction<string>) => {
+      state.deviceUsages = state.deviceUsages.filter(u => u.appointmentId !== action.payload);
+      saveState(state);
+    },
+    startMaintenance: (state, action: PayloadAction<MaintenanceRecord>) => {
+      const device = state.devices.find(d => d.id === action.payload.deviceId);
+      if (!device || device.status === 'disabled') return;
+      state.maintenanceRecords.unshift(action.payload);
+      device.status = 'maintenance';
+      saveState(state);
+    },
+    completeMaintenance: (state, action: PayloadAction<{ recordId: string; description: string; cost: number; performedBy: string; notes: string }>) => {
+      const record = state.maintenanceRecords.find(r => r.id === action.payload.recordId);
+      if (!record || record.status !== 'in_progress') return;
+      const device = state.devices.find(d => d.id === record.deviceId);
+      const now = new Date();
+      record.status = 'completed';
+      record.completedAt = now.toISOString();
+      record.description = action.payload.description;
+      record.cost = action.payload.cost;
+      record.performedBy = action.payload.performedBy;
+      record.notes = action.payload.notes;
+      if (device) {
+        // 保养完成后重置保养计时基准，保养记录跟随仪器
+        const totalMinutes = state.deviceUsages
+          .filter(u => u.deviceId === device.id)
+          .reduce((sum, u) => sum + u.duration, 0);
+        device.lastMaintenanceDate = now.toISOString().split('T')[0];
+        device.hoursAtLastMaintenance = totalMinutes / 60;
+        if (device.status === 'maintenance') {
+          device.status = 'active';
+        }
+      }
+      saveState(state);
     }
   }
 });
@@ -263,7 +365,15 @@ export const {
   addWaitList,
   updateWaitList,
   deleteWaitList,
-  addServiceRecord
+  addServiceRecord,
+  addDevice,
+  updateDevice,
+  setDeviceStatus,
+  addDeviceUsage,
+  deleteDeviceUsage,
+  removeDeviceUsagesByAppointment,
+  startMaintenance,
+  completeMaintenance
 } = appSlice.actions;
 
 export const store = configureStore({

@@ -28,9 +28,17 @@ import {
 import Calendar from 'react-calendar';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState } from '../../store';
-import { addAppointment, updateAppointment, deleteAppointment, addWaitList } from '../../store';
-import type { Appointment, WaitList } from '../../types';
+import {
+  addAppointment,
+  updateAppointment,
+  deleteAppointment,
+  addWaitList,
+  addDeviceUsage,
+  removeDeviceUsagesByAppointment
+} from '../../store';
+import type { Appointment, WaitList, DeviceUsage } from '../../types';
 import { formatDate, formatTime, formatCurrency, generateId, getStatusText, getStatusColor } from '../../utils/format';
+import { hasDeviceTimeConflict, DEVICE_STATUS_META } from '../../utils/device';
 import dayjs from 'dayjs';
 
 const AppointmentCalendar: React.FC = () => {
@@ -88,6 +96,7 @@ const AppointmentCalendar: React.FC = () => {
         customerId: values.customerId,
         serviceId: values.serviceId,
         employeeId: values.employeeId,
+        deviceId: values.deviceId || undefined,
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),
         duration,
@@ -96,6 +105,26 @@ const AppointmentCalendar: React.FC = () => {
         notes: values.notes || '',
         reminderSent: false,
       };
+
+      // 停用的仪器不能再被排到项目里
+      if (values.deviceId) {
+        const device = state.devices.find((d) => d.id === values.deviceId);
+        if (!device || device.status !== 'active') {
+          message.error('该仪器已停用或保养中，不能排到项目里');
+          return;
+        }
+        // 同一台仪器同一时段不能被两个项目占用
+        const deviceConflict = hasDeviceTimeConflict(
+          state.deviceUsages,
+          values.deviceId,
+          startTime.toISOString(),
+          endTime.toISOString()
+        );
+        if (deviceConflict) {
+          message.error(`仪器「${device.name}」此时段已被其他项目占用，请更换时段或仪器`);
+          return;
+        }
+      }
 
       const hasConflict = state.appointments.some((a) => {
         if (a.employeeId !== values.employeeId || a.status === 'cancelled') return false;
@@ -130,6 +159,22 @@ const AppointmentCalendar: React.FC = () => {
       }
 
       dispatch(addAppointment(newAppointment));
+      // 预约占用仪器时同步登记使用台账
+      if (values.deviceId) {
+        const usage: DeviceUsage = {
+          id: generateId(),
+          deviceId: values.deviceId,
+          appointmentId: newAppointment.id,
+          serviceId: values.serviceId,
+          operatorId: values.employeeId,
+          date: startTime.format('YYYY-MM-DD'),
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          duration,
+          notes: '',
+        };
+        dispatch(addDeviceUsage(usage));
+      }
       message.success('预约成功');
       setIsModalOpen(false);
     } catch {
@@ -144,6 +189,10 @@ const AppointmentCalendar: React.FC = () => {
         status: newStatus as Appointment['status'],
       })
     );
+    // 预约取消时释放仪器占用
+    if (newStatus === 'cancelled') {
+      dispatch(removeDeviceUsagesByAppointment(appointment.id));
+    }
     message.success('状态更新成功');
   };
 
@@ -153,6 +202,7 @@ const AppointmentCalendar: React.FC = () => {
       content: '确定要取消该预约吗？',
       onOk: () => {
         dispatch(deleteAppointment(id));
+        dispatch(removeDeviceUsagesByAppointment(id));
         message.success('预约已取消');
       },
     });
@@ -206,6 +256,7 @@ const AppointmentCalendar: React.FC = () => {
                 const customer = state.customers.find((c) => c.id === appointment.customerId);
                 const service = state.services.find((s) => s.id === appointment.serviceId);
                 const employee = state.employees.find((e) => e.id === appointment.employeeId);
+                const device = state.devices.find((d) => d.id === appointment.deviceId);
 
                 return (
                   <div
@@ -220,6 +271,11 @@ const AppointmentCalendar: React.FC = () => {
                             <div style={{ fontWeight: 500 }}>{customer?.name}</div>
                             <div style={{ fontSize: 12, color: '#8c8c8c' }}>
                               {service?.name} · {employee?.name}
+                              {device && (
+                                <Tag style={{ marginLeft: 6 }} color="cyan">
+                                  {device.name}
+                                </Tag>
+                              )}
                             </div>
                           </div>
                         </Space>
@@ -349,6 +405,26 @@ const AppointmentCalendar: React.FC = () => {
                   value: e.id,
                   label: `${e.name} - ${getStatusText(e.role)}`,
                 }))}
+            />
+          </Form.Item>
+          <Form.Item
+            name="deviceId"
+            label="使用仪器（选填）"
+            extra="停用或保养中的仪器不可排入项目"
+          >
+            <Select
+              placeholder="不使用仪器"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              options={state.devices.map((d) => ({
+                value: d.id,
+                label:
+                  d.status === 'active'
+                    ? `${d.code} ${d.name}（${d.room}）`
+                    : `${d.code} ${d.name}（${DEVICE_STATUS_META[d.status].text}）`,
+                disabled: d.status !== 'active',
+              }))}
             />
           </Form.Item>
           <Row gutter={16}>
